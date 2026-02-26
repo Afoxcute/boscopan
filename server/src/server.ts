@@ -12,8 +12,11 @@ import { paymentMiddleware } from "x402-express";
 import { settleResponseFromHeader } from "x402/types";
 import { exact } from "x402/schemes";
 import OpenAI from "openai";
+import { privateKeyToAccount } from "viem/accounts";
+import type { Hex } from "viem";
 import { createPaidPriceAlert } from "./x402Client";
 import { startChatInterface } from "./chat";
+import * as alertStore from "./alertStore";
 
 /**
  * Unified API Server
@@ -98,6 +101,17 @@ const ALLOWED_ASSETS = ["BTC", "ETH", "LINK"] as const;
  * - lte: less than or equal
  */
 const ALLOWED_CONDITIONS = ["gt", "lt", "gte", "lte"] as const;
+
+/**
+ * Agent wallet address (for list/cancel in chat). Derived from AGENT_WALLET_PRIVATE_KEY.
+ */
+const agentAddress =
+  process.env.AGENT_WALLET_ADDRESS ||
+  (process.env.AGENT_WALLET_PRIVATE_KEY
+    ? privateKeyToAccount((process.env.AGENT_WALLET_PRIVATE_KEY as Hex).startsWith("0x")
+        ? (process.env.AGENT_WALLET_PRIVATE_KEY as Hex)
+        : (`0x${process.env.AGENT_WALLET_PRIVATE_KEY}` as Hex)).address
+    : "");
 
 /**
  * Check that the x402 facilitator is reachable (payment verification will fail otherwise).
@@ -329,31 +343,25 @@ app.post("/chat", async (req, res) => {
 
   try {
     /**
-     * Step 1: Extract alert parameters using OpenAI
+     * Step 1: Extract intent and parameters using OpenAI (multi-step agent)
      *
-     * We use OpenAI's tool/function calling to extract structured data
-     * from natural language. The system message instructs the model to:
-     * - Only create alerts for supported assets (BTC, ETH, LINK)
-     * - Respond with helpful text if unsupported assets are requested
-     * - Call the create_price_alert function only for valid requests
+     * Tools: create_price_alert (one or more), list_alerts, cancel_alert.
+     * The model can call multiple tools in one turn (e.g. list then cancel, or create two alerts).
      */
-    console.log("  [1] Extracting alert parameters with OpenAI...");
+    console.log("  [1] Extracting intent with OpenAI (multi-step)...");
     const response = await llmClient.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
-          content: `You are a helpful assistant that creates crypto price alerts. 
+          content: `You are a helpful assistant for crypto price alerts. You can CREATE alerts, LIST the user's alerts, and CANCEL an alert.
 
 IMPORTANT RULES:
-- You can ONLY create alerts for these supported assets: ${ALLOWED_ASSETS.join(", ")}
-- If a user requests an alert for ANY other asset (like SOL, DOGE, ADA, XRP, etc.), you MUST respond with a text message explaining that only ${ALLOWED_ASSETS.join(
-            ", "
-          )} are supported
-- DO NOT call the create_price_alert function if the user requests an unsupported asset
-- Only call the create_price_alert function when the user requests an alert for one of the supported assets: ${ALLOWED_ASSETS.join(
-            ", "
-          )}`,
+- Supported assets: ${ALLOWED_ASSETS.join(", ")} only. For any other asset, respond with text explaining only ${ALLOWED_ASSETS.join(", ")} are supported.
+- You may call multiple tools in one response when the user asks for several things (e.g. "create alert for ETH > 2000 and also for BTC > 60000", or "list my alerts and cancel the second one").
+- For "list my alerts" or "show my alerts", use list_alerts.
+- For "cancel the second one" / "remove alert 2" use cancel_alert with alert_index (1-based). For "cancel alert abc123" use cancel_alert with alert_id.
+- For creating alerts, use create_price_alert. You can call it multiple times in one turn if the user requests multiple alerts.`,
         },
         { role: "user", content: message },
       ],
@@ -362,36 +370,42 @@ IMPORTANT RULES:
           type: "function",
           function: {
             name: "create_price_alert",
-            description: `Create a price alert. ONLY use this function for supported assets: ${ALLOWED_ASSETS.join(
-              ", "
-            )}. If the user requests an unsupported asset, respond with text instead.`,
+            description: `Create one price alert. Use for supported assets: ${ALLOWED_ASSETS.join(", ")}. Call multiple times if the user wants multiple alerts.`,
             parameters: {
               type: "object",
               properties: {
-                asset: {
-                  type: "string",
-                  enum: [...ALLOWED_ASSETS],
-                  description: `The cryptocurrency asset to monitor. MUST be one of: ${ALLOWED_ASSETS.join(", ")}`,
-                },
-                condition: {
-                  type: "string",
-                  enum: [...ALLOWED_CONDITIONS],
-                  description:
-                    "The price condition: gt (greater than), lt (less than), gte (greater than or equal), lte (less than or equal)",
-                },
-                targetPriceUsd: {
-                  type: "number",
-                  description: "The target price in USD",
-                },
+                asset: { type: "string", enum: [...ALLOWED_ASSETS], description: `Asset: ${ALLOWED_ASSETS.join(", ")}` },
+                condition: { type: "string", enum: [...ALLOWED_CONDITIONS], description: "gt, lt, gte, or lte" },
+                targetPriceUsd: { type: "number", description: "Target price in USD" },
               },
               required: ["asset", "condition", "targetPriceUsd"],
             },
           },
         },
+        {
+          type: "function",
+          function: {
+            name: "list_alerts",
+            description: "List the user's active price alerts. Use when the user asks to see, list, or show their alerts.",
+            parameters: { type: "object", properties: {}, required: [] },
+          },
+        },
+        {
+          type: "function",
+          function: {
+            name: "cancel_alert",
+            description: "Cancel one alert by its id or by position (1-based index from list). Use when the user asks to cancel, remove, or delete an alert.",
+            parameters: {
+              type: "object",
+              properties: {
+                alert_id: { type: "string", description: "The alert ID (e.g. from a previous list). Use when user refers to an id." },
+                alert_index: { type: "number", description: "1-based position (e.g. 2 = second alert). Use when user says 'cancel the second one'." },
+              },
+              required: [],
+            },
+          },
+        },
       ],
-      // Note: tool_choice is intentionally not set to "required"
-      // This allows the model to respond with text when unsupported assets are requested,
-      // rather than forcing a function call that would fail validation
     });
 
     const responseMessage = response.choices[0]?.message;
@@ -402,12 +416,7 @@ IMPORTANT RULES:
     }
 
     /**
-     * Handle text response from the model
-     *
-     * The model may respond with text instead of calling the function when:
-     * - User requests an unsupported asset
-     * - User's message is unclear or not a valid alert request
-     * - User asks a question or makes a general inquiry
+     * Handle text-only response (no tool calls)
      */
     if (responseMessage.content && (!responseMessage.tool_calls || responseMessage.tool_calls.length === 0)) {
       console.log(`  [REPLY] "${responseMessage.content}"`);
@@ -416,106 +425,91 @@ IMPORTANT RULES:
     }
 
     /**
-     * Handle function call from the model
-     *
-     * When the model calls the create_price_alert function, we:
-     * 1. Parse the function arguments (asset, condition, targetPriceUsd)
-     * 2. Validate the parameters match our constraints
-     * 3. Create the alert via x402 payment
+     * Multi-step: execute each tool call (create_price_alert, list_alerts, cancel_alert)
      */
-    if (responseMessage.tool_calls && responseMessage.tool_calls[0]?.function?.name === "create_price_alert") {
-      /**
-       * Parse function arguments from the model's function call
-       *
-       * The model returns function arguments as a JSON string that needs to be parsed.
-       * The arguments should contain: asset, condition, and targetPriceUsd.
-       */
-      let args;
-      try {
-        args = JSON.parse(responseMessage.tool_calls[0].function.arguments);
-      } catch (parseError) {
-        console.log("  [ERROR] Failed to parse function arguments");
-        return res.status(500).json({ error: "Failed to parse function arguments" });
-      }
-
-      /**
-       * Validate extracted parameters
-       *
-       * Even though the function definition includes enum constraints,
-       * we perform additional validation as a security measure.
-       */
-      if (!ALLOWED_ASSETS.includes(args.asset)) {
-        return res.status(400).json({
-          error: `Asset "${args.asset}" is not supported. Only ${ALLOWED_ASSETS.join(", ")} are allowed.`,
-        });
-      }
-      if (!ALLOWED_CONDITIONS.includes(args.condition)) {
-        return res.status(400).json({
-          error: `Invalid condition "${args.condition}". Must be one of: ${ALLOWED_CONDITIONS.join(", ")}`,
-        });
-      }
-      if (typeof args.targetPriceUsd !== "number" || args.targetPriceUsd <= 0) {
-        return res.status(400).json({
-          error: "targetPriceUsd must be a positive number",
-        });
-      }
-
-      console.log(`  [2] Parameters: ${args.asset} ${args.condition} $${args.targetPriceUsd}`);
-
-      /**
-       * Step 2: Create paid alert via internal /alerts endpoint
-       *
-       * This makes an HTTP request to the /alerts endpoint, which triggers
-       * the x402 payment flow. The x402Client handles the payment automatically.
-       */
-      console.log("  [3] Creating alert via /alerts endpoint (x402 payment)...");
-      try {
-        const result = await createPaidPriceAlert({
-          asset: args.asset,
-          condition: args.condition,
-          targetPriceUsd: args.targetPriceUsd,
-        });
-        console.log(`  [SUCCESS] Alert created - ID: ${result.alert.id}`);
-        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-
-        return res.json({
-          reply: `Price alert created: ${args.asset} ${args.condition} $${args.targetPriceUsd}`,
-          alert: result.alert,
-          transactionHash: result.transactionHash,
-        });
-      } catch (paymentError: any) {
-        const isFacilitatorTimeout =
-          paymentError?.cause?.code === "UND_ERR_CONNECT_TIMEOUT" ||
-          (paymentError?.message?.includes("fetch failed") && paymentError?.cause);
-        const is402AfterPayment =
-          paymentError?.message?.includes("402") && paymentError?.message?.includes("Payment Required");
-        const detail =
-          isFacilitatorTimeout || is402AfterPayment
-            ? "Payment could not be verified. The server may be unable to reach the x402 facilitator (https://x402.org). Check firewall/VPN and allow outbound HTTPS to x402.org."
-            : paymentError.message;
-        console.log(`  [ERROR] Payment failed: ${paymentError.message}`);
-        if (is402AfterPayment) console.log("  [INFO] Client sent payment but server returned 402 — verification likely failed (e.g. facilitator unreachable).");
-        if (isFacilitatorTimeout) console.log("  [INFO] Likely cause: facilitator unreachable (connection timeout)");
-        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-        return res.status(503).json({
-          error: "Failed to create price alert",
-          details: detail,
-        });
-      }
-    } else {
-      /**
-       * Fallback: Text response from the model
-       *
-       * This handles cases where the model returns a response but it doesn't
-       * match our expected patterns (no function call, no content, etc.)
-       */
-      const textReply = responseMessage.content
-        ? responseMessage.content
-        : "I can help you create price alerts for BTC, ETH, or LINK. Try saying something like 'Create an alert when BTC is greater than 50000'.";
-      console.log(`  [REPLY] "${textReply}"`);
-      console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-      return res.json({ reply: textReply });
+    const toolCalls = responseMessage.tool_calls || [];
+    const needsAgentAddress = toolCalls.some(
+      (t) => t.function?.name === "list_alerts" || t.function?.name === "cancel_alert"
+    );
+    if (needsAgentAddress && !agentAddress) {
+      console.log("  [ERROR] list_alerts/cancel_alert require AGENT_WALLET_PRIVATE_KEY or AGENT_WALLET_ADDRESS");
+      return res.status(500).json({ error: "Agent wallet not configured for list/cancel" });
     }
+
+    const sortedCalls = [...toolCalls].sort((a, b) => ((a as { index?: number }).index ?? 0) - ((b as { index?: number }).index ?? 0));
+    const created: { alert: { id: string; asset: string; condition: string; targetPriceUsd: number; payer?: string }; transactionHash?: string }[] = [];
+    let listAlerts: alertStore.StoredAlertRecord[] | undefined;
+    const cancelled: string[] = [];
+    const errors: string[] = [];
+
+    for (const tc of sortedCalls) {
+      const name = tc.function?.name;
+      let args: Record<string, unknown> = {};
+      try {
+        if (tc.function?.arguments) args = JSON.parse(tc.function.arguments);
+      } catch {
+        errors.push(`Invalid arguments for ${name}`);
+        continue;
+      }
+
+      if (name === "create_price_alert") {
+        if (!(ALLOWED_ASSETS as readonly string[]).includes(String(args.asset)) || !(ALLOWED_CONDITIONS as readonly string[]).includes(String(args.condition)) || typeof args.targetPriceUsd !== "number" || args.targetPriceUsd <= 0) {
+          errors.push(`Invalid create_price_alert params: ${JSON.stringify(args)}`);
+          continue;
+        }
+        console.log(`  [2] Create alert: ${args.asset} ${args.condition} $${args.targetPriceUsd}`);
+        try {
+          const result = await createPaidPriceAlert({
+            asset: String(args.asset),
+            condition: args.condition as "gt" | "lt" | "gte" | "lte",
+            targetPriceUsd: Number(args.targetPriceUsd),
+          });
+          created.push({ alert: result.alert, transactionHash: result.transactionHash });
+          console.log(`  [SUCCESS] Alert created - ID: ${result.alert.id}`);
+        } catch (paymentError: any) {
+          const msg = paymentError?.message ?? "Payment failed";
+          errors.push(msg);
+          console.log(`  [ERROR] Payment failed: ${msg}`);
+        }
+      } else if (name === "list_alerts") {
+        listAlerts = alertStore.getAlertsByPayer(agentAddress);
+        console.log(`  [LIST] ${listAlerts.length} alert(s) for payer`);
+      } else if (name === "cancel_alert") {
+        if (args.alert_id) {
+          const result = alertStore.cancelAlert(String(args.alert_id), agentAddress);
+          if (result.ok) cancelled.push(String(args.alert_id)); else errors.push(result.error ?? "Cancel failed");
+        } else if (args.alert_index != null) {
+          const idx = Number(args.alert_index);
+          const result = alertStore.cancelAlertByIndex(agentAddress, idx);
+          if (result.ok) cancelled.push(`index ${idx}`); else errors.push(result.error ?? "Cancel failed");
+        } else {
+          errors.push("cancel_alert requires alert_id or alert_index");
+        }
+      }
+    }
+
+    const replyParts: string[] = [];
+    if (created.length) replyParts.push(`Created ${created.length} alert(s): ${created.map((c) => `${c.alert.asset} ${c.alert.condition} $${c.alert.targetPriceUsd}`).join("; ")}.`);
+    if (listAlerts !== undefined) {
+      if (listAlerts.length === 0) replyParts.push("You have no active alerts.");
+      else replyParts.push(`You have ${listAlerts.length} alert(s): ${listAlerts.map((a, i) => `${i + 1}. ${a.asset} ${a.condition} $${a.targetPriceUsd}`).join("; ")}.`);
+    }
+    if (cancelled.length) replyParts.push(`Cancelled: ${cancelled.join(", ")}.`);
+    if (errors.length) replyParts.push(`Errors: ${errors.join("; ")}.`);
+
+    const reply = replyParts.length ? replyParts.join(" ") : (responseMessage.content || "Done.");
+    console.log(`  [REPLY] "${reply}"`);
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+
+    const payload: Record<string, unknown> = { reply };
+    if (created.length) {
+      payload.alerts = created.map((c) => c.alert);
+      if (created.length === 1) payload.transactionHash = created[0].transactionHash;
+    }
+    if (listAlerts !== undefined) payload.listedAlerts = listAlerts;
+    if (cancelled.length) payload.cancelled = cancelled;
+    if (errors.length) payload.errors = errors;
+    return res.json(payload);
   } catch (error: any) {
     /**
      * Error Handling
@@ -647,6 +641,8 @@ app.post("/alerts", (req, res) => {
     ...alertData,
   };
 
+  alertStore.addAlert(alert);
+
   console.log(`  [2] Alert created: ${alert.id} (${alert.asset} ${alert.condition} $${alert.targetPriceUsd})`);
 
   /**
@@ -683,6 +679,48 @@ app.post("/alerts", (req, res) => {
   
 });
 
+/**
+ * GET /alerts
+ * List alerts for a payer (no payment). Used by the agent for "list my alerts".
+ * @query payer - Wallet address (e.g. 0x...) whose alerts to list
+ */
+app.get("/alerts", (req, res) => {
+  const payer = (req.query.payer as string)?.trim();
+  if (!payer) {
+    return res.status(400).json({ error: "Missing query parameter: payer" });
+  }
+  const alerts = alertStore.getAlertsByPayer(payer);
+  return res.json({ alerts });
+});
+
+/**
+ * POST /alerts/cancel
+ * Soft-cancel an alert by id or by 1-based index. No x402 payment.
+ * @body alertId - Alert id to cancel, or
+ * @body alertIndex - 1-based index (e.g. 2 = "the second alert") when listing by payer
+ * @body payer - Wallet address that owns the alert (required)
+ */
+app.post("/alerts/cancel", (req, res) => {
+  const { alertId, alertIndex, payer } = req.body || {};
+  const payerAddr = (payer as string)?.trim();
+  if (!payerAddr) {
+    return res.status(400).json({ error: "Missing body parameter: payer" });
+  }
+  if (alertId != null) {
+    const result = alertStore.cancelAlert(String(alertId), payerAddr);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    return res.json({ cancelled: alertId, message: "Alert cancelled" });
+  }
+  if (alertIndex != null) {
+    const idx = Number(alertIndex);
+    if (!Number.isInteger(idx) || idx < 1) return res.status(400).json({ error: "alertIndex must be a positive integer" });
+    const result = alertStore.cancelAlertByIndex(payerAddr, idx);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    return res.json({ cancelledIndex: idx, message: "Alert cancelled" });
+  }
+  return res.status(400).json({ error: "Provide either alertId or alertIndex" });
+});
+
 // ============================================================================
 // Server Startup
 // ============================================================================
@@ -691,8 +729,10 @@ app.listen(PORT, async () => {
   console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
   console.log("Server ready");
   console.log(`   http://localhost:${PORT}`);
-  console.log("   POST /chat   (natural language, no payment)");
-  console.log("   POST /alerts (requires x402 payment)");
+  console.log("   POST /chat        (natural language; list, cancel, create one or more alerts)");
+  console.log("   GET  /alerts      (list alerts by payer, no payment)");
+  console.log("   POST /alerts      (create alert, requires x402 payment)");
+  console.log("   POST /alerts/cancel (soft-cancel by id or index, no payment)");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
   await checkFacilitatorReachable();

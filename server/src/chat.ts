@@ -75,30 +75,39 @@ export function startChatInterface(port: number = 3000): void {
         console.log(`\n${data.reply}\n`);
       }
 
-      // Display alert details if created
-      if (data.alert) {
+      // Display alert(s) created (single or multi-step)
+      const alerts = data.alerts ?? (data.alert ? [data.alert] : []);
+      if (alerts.length) {
         console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        console.log("Alert Created:");
-        console.log(`  ID: ${data.alert.id}`);
-        console.log(`  Asset: ${data.alert.asset}`);
-        console.log(`  Condition: ${data.alert.condition}`);
-        console.log(`  Target Price: $${data.alert.targetPriceUsd.toLocaleString()}`);
-        if (data.transactionHash) {
-          console.log(`  Transaction: ${data.transactionHash}`);
+        console.log(alerts.length === 1 ? "Alert Created:" : "Alerts Created:");
+        for (let i = 0; i < alerts.length; i++) {
+          const a = alerts[i];
+          console.log(`  ${i + 1}. ${a.asset} ${a.condition} $${(a.targetPriceUsd ?? 0).toLocaleString()} (ID: ${a.id})`);
         }
+        if (data.transactionHash) console.log(`  Transaction: ${data.transactionHash}`);
         console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        
-        // Output CRE workflow payload
-        const workflowPayload = {
-          id: data.alert.id,
-          asset: data.alert.asset,
-          condition: data.alert.condition,
-          targetPriceUsd: data.alert.targetPriceUsd,
-          createdAt: data.alert.createdAt
-        };
-        console.log("\nCRE Workflow Payload (copy for HTTP trigger):\n");
-        console.log(JSON.stringify(workflowPayload));
+        const first = alerts[0];
+        if (first) {
+          console.log("\nCRE Workflow Payload (copy for HTTP trigger):\n");
+          console.log(JSON.stringify({ id: first.id, asset: first.asset, condition: first.condition, targetPriceUsd: first.targetPriceUsd, createdAt: first.createdAt }));
+          console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+        }
+      }
+
+      if (data.listedAlerts && data.listedAlerts.length > 0) {
+        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        console.log("Your alerts:");
+        data.listedAlerts.forEach((a: { asset: string; condition: string; targetPriceUsd: number }, i: number) => {
+          console.log(`  ${i + 1}. ${a.asset} ${a.condition} $${a.targetPriceUsd.toLocaleString()}`);
+        });
         console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+      }
+
+      if (data.cancelled && data.cancelled.length > 0) {
+        console.log(`Cancelled: ${data.cancelled.join(", ")}\n`);
+      }
+      if (data.errors && data.errors.length > 0) {
+        console.log(`[WARN] ${data.errors.join("; ")}\n`);
       }
     } catch (error: any) {
       console.log(`\n[ERROR] ${error.message}\n`);
