@@ -17,6 +17,7 @@ import type { Hex } from "viem";
 import { createPaidPriceAlert } from "./x402Client";
 import { startChatInterface } from "./chat";
 import * as alertStore from "./alertStore";
+import * as priceService from "./priceService";
 
 /**
  * Unified API Server
@@ -354,14 +355,13 @@ app.post("/chat", async (req, res) => {
       messages: [
         {
           role: "system",
-          content: `You are a helpful assistant for crypto price alerts. You can CREATE alerts, LIST the user's alerts, and CANCEL an alert.
+          content: `You are a helpful assistant for crypto price alerts. You provide blockchain abstraction: the user speaks in natural language; you use tools that read from the registry/backend and from price data.
 
-IMPORTANT RULES:
-- Supported assets: ${ALLOWED_ASSETS.join(", ")} only. For any other asset, respond with text explaining only ${ALLOWED_ASSETS.join(", ")} are supported.
-- You may call multiple tools in one response when the user asks for several things (e.g. "create alert for ETH > 2000 and also for BTC > 60000", or "list my alerts and cancel the second one").
-- For "list my alerts" or "show my alerts", use list_alerts.
-- For "cancel the second one" / "remove alert 2" use cancel_alert with alert_index (1-based). For "cancel alert abc123" use cancel_alert with alert_id.
-- For creating alerts, use create_price_alert. You can call it multiple times in one turn if the user requests multiple alerts.`,
+- "Show my alerts" / "list my alerts" → list_alerts (reads from the registry/backend). Summarize as "Here are your alerts from the registry: ...".
+- "What's the current ETH price?" / "BTC price?" / "price of LINK?" → get_current_price(asset) (backend returns current USD price).
+- Create alerts → create_price_alert. Cancel → cancel_alert. History/analytics → query_alert_history (paid).
+
+Supported assets: ${ALLOWED_ASSETS.join(", ")} only. You may call multiple tools in one response when the user asks for several things.`,
         },
         { role: "user", content: message },
       ],
@@ -386,8 +386,22 @@ IMPORTANT RULES:
           type: "function",
           function: {
             name: "list_alerts",
-            description: "List the user's active price alerts. Use when the user asks to see, list, or show their alerts.",
+            description: "List the user's active price alerts from the registry/backend. Use for 'show my alerts', 'list my alerts', 'what alerts do I have'.",
             parameters: { type: "object", properties: {}, required: [] },
+          },
+        },
+        {
+          type: "function",
+          function: {
+            name: "get_current_price",
+            description: "Get the current USD price for an asset (CRE/price data). Use when the user asks 'what is the current ETH price?', 'BTC price?', 'price of LINK?'.",
+            parameters: {
+              type: "object",
+              properties: {
+                asset: { type: "string", enum: [...ALLOWED_ASSETS], description: "Asset: BTC, ETH, or LINK" },
+              },
+              required: ["asset"],
+            },
           },
         },
         {
@@ -439,6 +453,7 @@ IMPORTANT RULES:
     const sortedCalls = [...toolCalls].sort((a, b) => ((a as { index?: number }).index ?? 0) - ((b as { index?: number }).index ?? 0));
     const created: { alert: { id: string; asset: string; condition: string; targetPriceUsd: number; payer?: string }; transactionHash?: string }[] = [];
     let listAlerts: alertStore.StoredAlertRecord[] | undefined;
+    const currentPrices: Record<string, number> = {};
     const cancelled: string[] = [];
     const errors: string[] = [];
 
@@ -474,6 +489,17 @@ IMPORTANT RULES:
       } else if (name === "list_alerts") {
         listAlerts = alertStore.getAlertsByPayer(agentAddress);
         console.log(`  [LIST] ${listAlerts.length} alert(s) for payer`);
+      } else if (name === "get_current_price") {
+        const asset = String(args.asset || "").toUpperCase();
+        if ((ALLOWED_ASSETS as readonly string[]).includes(asset)) {
+          try {
+            const price = await priceService.getPrice(asset as priceService.PriceAsset);
+            currentPrices[asset] = price;
+            console.log(`  [PRICE] ${asset} = $${price}`);
+          } catch (e: any) {
+            errors.push(`Price fetch failed for ${asset}: ${e?.message}`);
+          }
+        } else errors.push(`Unknown asset for price: ${asset}`);
       } else if (name === "cancel_alert") {
         if (args.alert_id) {
           const result = alertStore.cancelAlert(String(args.alert_id), agentAddress);
@@ -492,7 +518,10 @@ IMPORTANT RULES:
     if (created.length) replyParts.push(`Created ${created.length} alert(s): ${created.map((c) => `${c.alert.asset} ${c.alert.condition} $${c.alert.targetPriceUsd}`).join("; ")}.`);
     if (listAlerts !== undefined) {
       if (listAlerts.length === 0) replyParts.push("You have no active alerts.");
-      else replyParts.push(`You have ${listAlerts.length} alert(s): ${listAlerts.map((a, i) => `${i + 1}. ${a.asset} ${a.condition} $${a.targetPriceUsd}`).join("; ")}.`);
+      else replyParts.push(`You have ${listAlerts.length} alert(s) from the registry: ${listAlerts.map((a, i) => `${i + 1}. ${a.asset} ${a.condition} $${a.targetPriceUsd}`).join("; ")}.`);
+    }
+    if (Object.keys(currentPrices).length) {
+      replyParts.push(`Current prices: ${Object.entries(currentPrices).map(([k, v]) => `${k} $${v.toLocaleString()}`).join(", ")}.`);
     }
     if (cancelled.length) replyParts.push(`Cancelled: ${cancelled.join(", ")}.`);
     if (errors.length) replyParts.push(`Errors: ${errors.join("; ")}.`);
@@ -507,6 +536,7 @@ IMPORTANT RULES:
       if (created.length === 1) payload.transactionHash = created[0].transactionHash;
     }
     if (listAlerts !== undefined) payload.listedAlerts = listAlerts;
+    if (Object.keys(currentPrices).length) payload.currentPrices = currentPrices;
     if (cancelled.length) payload.cancelled = cancelled;
     if (errors.length) payload.errors = errors;
     return res.json(payload);
@@ -694,6 +724,26 @@ app.get("/alerts", (req, res) => {
 });
 
 /**
+ * GET /prices
+ * Current USD prices for BTC, ETH, LINK (used by agent for "What's the current ETH price?").
+ * Backend maps NL to price data — blockchain abstraction. No payment.
+ * @query asset - Optional: BTC, ETH, or LINK for a single price
+ */
+app.get("/prices", async (req, res) => {
+  const asset = (req.query.asset as string)?.toUpperCase();
+  try {
+    if (asset && (ALLOWED_ASSETS as readonly string[]).includes(asset)) {
+      const price = await priceService.getPrice(asset as priceService.PriceAsset);
+      return res.json({ asset, priceUsd: price });
+    }
+    const prices = await priceService.getPrices();
+    return res.json({ prices });
+  } catch (e: any) {
+    return res.status(503).json({ error: "Price service unavailable", details: e?.message });
+  }
+});
+
+/**
  * POST /alerts/cancel
  * Soft-cancel an alert by id or by 1-based index. No x402 payment.
  * @body alertId - Alert id to cancel, or
@@ -731,7 +781,8 @@ app.listen(PORT, async () => {
   console.log(`   http://localhost:${PORT}`);
   console.log("   POST /chat        (natural language; list, cancel, create one or more alerts)");
   console.log("   GET  /alerts      (list alerts by payer, no payment)");
-  console.log("   POST /alerts      (create alert, requires x402 payment)");
+  console.log("   GET  /prices     (current BTC/ETH/LINK USD price, no payment)");
+  console.log("   POST /alerts     (create alert, $0.01 USDC)");
   console.log("   POST /alerts/cancel (soft-cancel by id or index, no payment)");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 

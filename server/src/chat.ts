@@ -101,9 +101,18 @@ export function startChatInterface(port: number = 3000): void {
 
       if (data.listedAlerts && data.listedAlerts.length > 0) {
         console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        console.log("Your alerts:");
+        console.log("Your alerts (from registry):");
         data.listedAlerts.forEach((a: { asset: string; condition: string; targetPriceUsd: number }, i: number) => {
           console.log(`  ${i + 1}. ${a.asset} ${a.condition} $${a.targetPriceUsd.toLocaleString()}`);
+        });
+        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+      }
+
+      if (data.currentPrices && Object.keys(data.currentPrices).length > 0) {
+        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        console.log("Current prices (USD):");
+        Object.entries(data.currentPrices).forEach(([asset, price]) => {
+          console.log(`  ${asset}: $${Number(price).toLocaleString()}`);
         });
         console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
       }
