@@ -40,6 +40,16 @@ The system allows users to create cryptocurrency price alerts through natural la
 
 This demonstrates a complete flow from user interaction → payment → blockchain storage → automated monitoring → notification delivery.
 
+## AI agent blockchain abstraction
+
+**Agents send intents; the server handles chain, CRE, and x402.** The agent never sees RPC, ABI, or wallet details.
+
+- **Single agent API:** `POST /agent/action` with body `{ "intent": "create_alert" | "list_alerts" | "get_price" | "cancel_alert", "params": { ... } }`. Optional headers: `X-Agent-Wallet` (for list/cancel), `x-payment` (for paid intents after a 402).
+- **Paid intents (e.g. create_alert):** The server returns `402 Payment Required` with a payment challenge and `agentAction.forwardTo` (e.g. `POST /alerts`). The agent pays then calls that endpoint with the same params; the server performs chain/CRE/x402.
+- **Structured tool schema:** AI agents use the [Agent API OpenAPI spec](docs/agent-api.openapi.yaml) and [agent tools JSON schema](docs/agent-tools.schema.json) as their only interface to Web3/CRE.
+
+See [docs/agent-api.openapi.yaml](docs/agent-api.openapi.yaml) for the full API and [docs/agent-tools.schema.json](docs/agent-tools.schema.json) for the intent/params schema.
+
 ## Minimal System Flow
 
 ```mermaid
@@ -382,13 +392,13 @@ If you set your x402 Receiver in the root `.env` file (`X402_RECEIVER_ADDRESS`) 
 
 **Key Components:**
 
-- **`src/server.ts`**: Main Express.js server with two endpoints:
+- **`src/server.ts`**: Main Express.js server with agent and chat endpoints:
 
+  - `POST /agent/action`: **Agent-facing "blockchain lite" API** — single entry point for intents (`create_alert`, `list_alerts`, `get_price`, `cancel_alert`). Agent sends intent + params; server handles chain, CRE, and x402. For paid intents, returns 402 with payment endpoint; agent pays then calls that endpoint.
   - `POST /chat`: Natural language interface (no payment required)
-    - Uses Gemini AI to interpret user messages
-    - Extracts alert parameters via function calling
+    - Uses OpenAI to interpret user messages and extract alert parameters
     - Validates supported assets (BTC, ETH, LINK only)
-    - Internally calls `/alerts` endpoint with x402 payment
+    - Internally calls `/alerts` endpoint with x402 payment when creating alerts
   - `POST /alerts`: Direct alert creation (requires x402 payment)
     - Protected by x402 payment middleware ($0.01 USDC)
     - Creates deterministic alert ID (SHA256 hash)

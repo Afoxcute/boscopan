@@ -709,6 +709,109 @@ app.post("/alerts", (req, res) => {
   
 });
 
+// Base Sepolia USDC (for 402 payment requirement)
+const BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+
+/**
+ * POST /agent/action
+ * Agent-facing "blockchain lite" API: one REST entry point for intents.
+ * Agent sends { intent, params }; server handles chain, CRE, and x402.
+ * For paid intents (create_alert), server returns 402 with payment endpoint; agent pays then calls that endpoint.
+ */
+app.post("/agent/action", async (req, res) => {
+  const { intent, params = {} } = req.body || {};
+  const baseUrl = `${req.protocol}://${req.headers.host}`;
+  const payer = (req.headers["x-agent-wallet"] as string)?.trim() || (params.payer as string)?.trim();
+
+  if (!intent || typeof intent !== "string") {
+    return res.status(400).json({ error: "Missing or invalid intent", hint: "Use intent: create_alert | list_alerts | get_price | cancel_alert" });
+  }
+
+  switch (intent) {
+    case "create_alert": {
+      const asset = (params.asset as string)?.toUpperCase();
+      const condition = (params.condition as string)?.toLowerCase();
+      const target = params.target != null ? Number(params.target) : params.targetPriceUsd != null ? Number(params.targetPriceUsd) : null;
+      if (!asset || !condition || target == null || !(ALLOWED_ASSETS as readonly string[]).includes(asset) || !(ALLOWED_CONDITIONS as readonly string[]).includes(condition) || target <= 0) {
+        return res.status(400).json({ error: "create_alert requires params: { asset, condition, target }", allowed: { assets: [...ALLOWED_ASSETS], conditions: [...ALLOWED_CONDITIONS] } });
+      }
+      const paymentHeader = req.headers["x-payment"] as string | undefined;
+      if (!paymentHeader) {
+        return res.status(402).json({
+          x402Version: 1,
+          error: "X-PAYMENT header required for create_alert",
+          accepts: [{
+            scheme: "exact",
+            network: "base-sepolia",
+            maxAmountRequired: "10000",
+            resource: `${baseUrl}/alerts`,
+            description: "Create a crypto price alert",
+            mimeType: "",
+            payTo: payToAddress,
+            maxTimeoutSeconds: 60,
+            asset: BASE_SEPOLIA_USDC,
+            outputSchema: { input: { type: "http", method: "POST", discoverable: true } },
+            extra: { name: "USDC", version: "2" },
+          }],
+          agentAction: { intent: "create_alert", forwardTo: "POST /alerts", forwardParams: { asset, condition, targetPriceUsd: target } },
+        });
+      }
+      try {
+        const forwardRes = await fetch(`${baseUrl}/alerts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-payment": paymentHeader },
+          body: JSON.stringify({ asset, condition, targetPriceUsd: target }),
+        });
+        const data = await forwardRes.json().catch(() => ({}));
+        res.status(forwardRes.status).setHeader("x-payment-response", forwardRes.headers.get("x-payment-response") || "");
+        return res.json(data);
+      } catch (e: any) {
+        return res.status(503).json({ error: "Failed to create alert", details: e?.message });
+      }
+    }
+
+    case "list_alerts": {
+      if (!payer) return res.status(400).json({ error: "list_alerts requires X-Agent-Wallet header or params.payer" });
+      const alerts = alertStore.getAlertsByPayer(payer);
+      return res.json({ intent: "list_alerts", alerts });
+    }
+
+    case "get_price": {
+      const asset = (params.asset as string)?.toUpperCase();
+      try {
+        if (asset && (ALLOWED_ASSETS as readonly string[]).includes(asset)) {
+          const price = await priceService.getPrice(asset as priceService.PriceAsset);
+          return res.json({ intent: "get_price", asset, priceUsd: price });
+        }
+        const prices = await priceService.getPrices();
+        return res.json({ intent: "get_price", prices });
+      } catch (e: any) {
+        return res.status(503).json({ error: "Price service unavailable", details: e?.message });
+      }
+    }
+
+    case "cancel_alert": {
+      if (!payer) return res.status(400).json({ error: "cancel_alert requires X-Agent-Wallet header or params.payer" });
+      const alertId = params.alert_id != null ? String(params.alert_id) : null;
+      const alertIndex = params.alert_index != null ? Number(params.alert_index) : null;
+      if (alertId) {
+        const result = alertStore.cancelAlert(alertId, payer);
+        if (!result.ok) return res.status(400).json({ error: result.error });
+        return res.json({ intent: "cancel_alert", cancelled: alertId });
+      }
+      if (alertIndex != null && Number.isInteger(alertIndex) && alertIndex >= 1) {
+        const result = alertStore.cancelAlertByIndex(payer, alertIndex);
+        if (!result.ok) return res.status(400).json({ error: result.error });
+        return res.json({ intent: "cancel_alert", cancelledIndex: alertIndex });
+      }
+      return res.status(400).json({ error: "cancel_alert requires params.alert_id or params.alert_index" });
+    }
+
+    default:
+      return res.status(400).json({ error: "Unknown intent", intent, allowed: ["create_alert", "list_alerts", "get_price", "cancel_alert"] });
+  }
+});
+
 /**
  * GET /alerts
  * List alerts for a payer (no payment). Used by the agent for "list my alerts".
@@ -779,10 +882,11 @@ app.listen(PORT, async () => {
   console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
   console.log("Server ready");
   console.log(`   http://localhost:${PORT}`);
+  console.log("   POST /agent/action (agent API: intent + params; chain/CRE/x402 handled by server)");
   console.log("   POST /chat        (natural language; list, cancel, create one or more alerts)");
   console.log("   GET  /alerts      (list alerts by payer, no payment)");
-  console.log("   GET  /prices     (current BTC/ETH/LINK USD price, no payment)");
-  console.log("   POST /alerts     (create alert, $0.01 USDC)");
+  console.log("   GET  /prices      (current BTC/ETH/LINK USD price, no payment)");
+  console.log("   POST /alerts      (create alert, $0.01 USDC)");
   console.log("   POST /alerts/cancel (soft-cancel by id or index, no payment)");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
