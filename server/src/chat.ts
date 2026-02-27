@@ -86,11 +86,16 @@ export function startChatInterface(port: number = 3000): void {
         }
         if (data.transactionHash) console.log(`  Transaction: ${data.transactionHash}`);
         console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        const first = alerts[0];
-        if (first) {
-          console.log("\nCRE Workflow Payload (copy for HTTP trigger):\n");
-          console.log(JSON.stringify({ id: first.id, asset: first.asset, condition: first.condition, targetPriceUsd: first.targetPriceUsd, createdAt: first.createdAt }));
-          console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+        if (alerts.length) {
+          console.log("\nCRE Workflow Payload(s) (copy for HTTP trigger):\n");
+          for (let i = 0; i < alerts.length; i++) {
+            const a = alerts[i];
+            const payload = { id: a.id, asset: a.asset, condition: a.condition, targetPriceUsd: a.targetPriceUsd, createdAt: a.createdAt };
+            if (alerts.length > 1) console.log(`  Alert ${i + 1}:`);
+            console.log(JSON.stringify(payload));
+            if (i < alerts.length - 1) console.log("");
+          }
+          console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
         }
       }
 
