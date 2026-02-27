@@ -1,10 +1,10 @@
 # Boscopan
 
-**Autonomous AI agents + on-chain price alerts.** Natural language, x402 micropayments, Chainlink CRE, and Base Sepolia — one stack for hackathon-ready agentic automation.
+**Autonomous AI agents + on-chain price alerts.** Natural language, x402 micropayments, Chainlink CRE, and Base Sepolia
 
 ---
 
-## Hackathon track: why Boscopan
+## why Boscopan
 
 Boscopan fits **agentic automation + onchain** and **AI × Web3** tracks:
 
