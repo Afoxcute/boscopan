@@ -44,9 +44,11 @@ This demonstrates a complete flow from user interaction → payment → blockcha
 
 **Agents send intents; the server handles chain, CRE, and x402.** The agent never sees RPC, ABI, or wallet details.
 
-- **Single agent API:** `POST /agent/action` with body `{ "intent": "create_alert" | "list_alerts" | "get_price" | "cancel_alert", "params": { ... } }`. Optional headers: `X-Agent-Wallet` (for list/cancel), `x-payment` (for paid intents after a 402).
+- **Single agent API:** `POST /agent/action` with body `{ "intent": "create_alert" | "list_alerts" | "get_price" | "cancel_alert" | "run_alerts_check", "params": { ... } }`. Optional headers: `X-Agent-Wallet` (for list/cancel), `x-payment` (for paid intents after a 402).
 - **Paid intents (e.g. create_alert):** The server returns `402 Payment Required` with a payment challenge and `agentAction.forwardTo` (e.g. `POST /alerts`). The agent pays then calls that endpoint with the same params; the server performs chain/CRE/x402.
 - **Structured tool schema:** AI agents use the [Agent API OpenAPI spec](docs/agent-api.openapi.yaml) and [agent tools JSON schema](docs/agent-tools.schema.json) as their only interface to Web3/CRE.
+- **Scheduled agent:** Set `SCHEDULED_AGENT_INTERVAL_MS` (e.g. `900000` for 15 min). A job periodically reads open alerts and recent prices, calls an LLM for a short summary/suggestion, and stores it. Use `GET /agent/summary` for the last summary.
+- **Run alerts check now:** From chat (“run my alerts check now”) or API: `POST /agent/run-alerts-check` or intent `run_alerts_check`. The server runs the same condition logic as the CRE cron and returns which alerts would trigger. If `CRE_RUN_CHECK_URL` is set to your CRE workflow’s run-check HTTP URL, the server also triggers the full CRE run (prices + RuleRegistry + Pushover).
 
 See [docs/agent-api.openapi.yaml](docs/agent-api.openapi.yaml) for the full API and [docs/agent-tools.schema.json](docs/agent-tools.schema.json) for the intent/params schema.
 

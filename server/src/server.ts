@@ -18,6 +18,7 @@ import { createPaidPriceAlert } from "./x402Client";
 import { startChatInterface } from "./chat";
 import * as alertStore from "./alertStore";
 import * as priceService from "./priceService";
+import * as scheduledAgent from "./scheduledAgent";
 
 /**
  * Unified API Server
@@ -359,7 +360,7 @@ app.post("/chat", async (req, res) => {
 
 - "Show my alerts" / "list my alerts" → list_alerts (reads from the registry/backend). Summarize as "Here are your alerts from the registry: ...".
 - "What's the current ETH price?" / "BTC price?" / "price of LINK?" → get_current_price(asset) (backend returns current USD price).
-- Create alerts → create_price_alert. Cancel → cancel_alert. History/analytics → query_alert_history (paid).
+- Create alerts → create_price_alert. Cancel → cancel_alert. For "run my alerts check now" or "check alerts" use run_alerts_check (runs same logic as CRE cron).
 
 Supported assets: ${ALLOWED_ASSETS.join(", ")} only. You may call multiple tools in one response when the user asks for several things.`,
         },
@@ -419,6 +420,14 @@ Supported assets: ${ALLOWED_ASSETS.join(", ")} only. You may call multiple tools
             },
           },
         },
+        {
+          type: "function",
+          function: {
+            name: "run_alerts_check",
+            description: "Run the alerts check now (same logic as the CRE cron). Use when the user says 'run my alerts check now', 'check alerts', 'run the check'.",
+            parameters: { type: "object", properties: {}, required: [] },
+          },
+        },
       ],
     });
 
@@ -453,6 +462,7 @@ Supported assets: ${ALLOWED_ASSETS.join(", ")} only. You may call multiple tools
     const sortedCalls = [...toolCalls].sort((a, b) => ((a as { index?: number }).index ?? 0) - ((b as { index?: number }).index ?? 0));
     const created: { alert: { id: string; asset: string; condition: string; targetPriceUsd: number; payer?: string }; transactionHash?: string }[] = [];
     let listAlerts: alertStore.StoredAlertRecord[] | undefined;
+    let runCheckResult: Awaited<ReturnType<typeof scheduledAgent.runAlertsCheckNow>> | undefined;
     const currentPrices: Record<string, number> = {};
     const cancelled: string[] = [];
     const errors: string[] = [];
@@ -500,6 +510,14 @@ Supported assets: ${ALLOWED_ASSETS.join(", ")} only. You may call multiple tools
             errors.push(`Price fetch failed for ${asset}: ${e?.message}`);
           }
         } else errors.push(`Unknown asset for price: ${asset}`);
+      } else if (name === "run_alerts_check") {
+        runCheckResult = await scheduledAgent.runAlertsCheckNow();
+        if (process.env.CRE_RUN_CHECK_URL) {
+          try {
+            await fetch(process.env.CRE_RUN_CHECK_URL, { method: "POST", signal: AbortSignal.timeout(30_000) });
+          } catch (_e) {}
+        }
+        console.log(`  [RUN_CHECK] ${runCheckResult.triggered.length} would trigger, ${runCheckResult.alertsCount} total alerts`);
       } else if (name === "cancel_alert") {
         if (args.alert_id) {
           const result = alertStore.cancelAlert(String(args.alert_id), agentAddress);
@@ -523,6 +541,7 @@ Supported assets: ${ALLOWED_ASSETS.join(", ")} only. You may call multiple tools
     if (Object.keys(currentPrices).length) {
       replyParts.push(`Current prices: ${Object.entries(currentPrices).map(([k, v]) => `${k} $${v.toLocaleString()}`).join(", ")}.`);
     }
+    if (runCheckResult) replyParts.push(runCheckResult.summary);
     if (cancelled.length) replyParts.push(`Cancelled: ${cancelled.join(", ")}.`);
     if (errors.length) replyParts.push(`Errors: ${errors.join("; ")}.`);
 
@@ -536,6 +555,7 @@ Supported assets: ${ALLOWED_ASSETS.join(", ")} only. You may call multiple tools
       if (created.length === 1) payload.transactionHash = created[0].transactionHash;
     }
     if (listAlerts !== undefined) payload.listedAlerts = listAlerts;
+    if (runCheckResult) payload.runAlertsCheck = runCheckResult;
     if (Object.keys(currentPrices).length) payload.currentPrices = currentPrices;
     if (cancelled.length) payload.cancelled = cancelled;
     if (errors.length) payload.errors = errors;
@@ -724,7 +744,7 @@ app.post("/agent/action", async (req, res) => {
   const payer = (req.headers["x-agent-wallet"] as string)?.trim() || (params.payer as string)?.trim();
 
   if (!intent || typeof intent !== "string") {
-    return res.status(400).json({ error: "Missing or invalid intent", hint: "Use intent: create_alert | list_alerts | get_price | cancel_alert" });
+    return res.status(400).json({ error: "Missing or invalid intent", hint: "Use intent: create_alert | list_alerts | get_price | cancel_alert | run_alerts_check" });
   }
 
   switch (intent) {
@@ -807,9 +827,48 @@ app.post("/agent/action", async (req, res) => {
       return res.status(400).json({ error: "cancel_alert requires params.alert_id or params.alert_index" });
     }
 
+    case "run_alerts_check": {
+      const result = await scheduledAgent.runAlertsCheckNow();
+      const creUrl = process.env.CRE_RUN_CHECK_URL;
+      if (creUrl) {
+        try {
+          await fetch(creUrl, { method: "POST", signal: AbortSignal.timeout(30_000) });
+        } catch (e) {
+          // optional: log CRE trigger failure
+        }
+      }
+      return res.json({ intent: "run_alerts_check", ...result });
+    }
+
     default:
-      return res.status(400).json({ error: "Unknown intent", intent, allowed: ["create_alert", "list_alerts", "get_price", "cancel_alert"] });
+      return res.status(400).json({ error: "Unknown intent", intent, allowed: ["create_alert", "list_alerts", "get_price", "cancel_alert", "run_alerts_check"] });
   }
+});
+
+/**
+ * GET /agent/summary
+ * Last summary from the scheduled agent (reasoning over alerts + prices). Autonomous agent runs periodically when SCHEDULED_AGENT_INTERVAL_MS > 0.
+ */
+app.get("/agent/summary", (_req, res) => {
+  const { summary, lastRunAt } = scheduledAgent.getLastSummary();
+  return res.json({ summary, lastRunAt });
+});
+
+/**
+ * POST /agent/run-alerts-check
+ * Run the same "alerts check" logic the CRE cron uses: which alerts would trigger now. Optionally triggers CRE workflow if CRE_RUN_CHECK_URL is set.
+ */
+app.post("/agent/run-alerts-check", async (_req, res) => {
+  const result = await scheduledAgent.runAlertsCheckNow();
+  const creUrl = process.env.CRE_RUN_CHECK_URL;
+  if (creUrl) {
+    try {
+      await fetch(creUrl, { method: "POST", signal: AbortSignal.timeout(30_000) });
+    } catch (e) {
+      // optional
+    }
+  }
+  return res.json(result);
 });
 
 /**
@@ -888,9 +947,12 @@ app.listen(PORT, async () => {
   console.log("   GET  /prices      (current BTC/ETH/LINK USD price, no payment)");
   console.log("   POST /alerts      (create alert, $0.01 USDC)");
   console.log("   POST /alerts/cancel (soft-cancel by id or index, no payment)");
+  console.log("   GET  /agent/summary (last scheduled agent summary)");
+  console.log("   POST /agent/run-alerts-check (run alerts check now; optional CRE_RUN_CHECK_URL)");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
   await checkFacilitatorReachable();
+  scheduledAgent.startScheduledAgent();
 
   // Enable interactive chat if --chat flag is passed or ENABLE_CHAT env var is set
   const enableChat = process.argv.includes("--chat") || process.env.ENABLE_CHAT === "true";

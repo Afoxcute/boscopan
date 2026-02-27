@@ -17,6 +17,7 @@
 import { cre, Runner } from "@chainlink/cre-sdk";
 import { onHttpTrigger } from "./httpCallback";
 import { onCronTrigger } from "./cronCallback";
+import { onRunCheckTrigger } from "./runCheckCallback";
 import type { Config } from "./types";
 
 // ============================================================================
@@ -46,6 +47,8 @@ const initWorkflow = (config: Config) => {
       }),
       onHttpTrigger
     ),
+    // Run-check HTTP trigger: same logic as cron, for CRE_RUN_CHECK_URL (no auth).
+    cre.handler(http.trigger({}), onRunCheckTrigger),
   ];
 };
 

@@ -35,6 +35,17 @@ export function getAlertsByPayer(payer: string): StoredAlertRecord[] {
   return list.filter((a) => !cancelledIds.has(a.id));
 }
 
+/** All non-cancelled alerts (all payers). For scheduled agent / run-check. */
+export function getAllAlerts(): StoredAlertRecord[] {
+  const out: StoredAlertRecord[] = [];
+  for (const list of byPayer.values()) {
+    for (const a of list) {
+      if (!cancelledIds.has(a.id)) out.push(a);
+    }
+  }
+  return out;
+}
+
 export function getAlertById(id: string): StoredAlertRecord | undefined {
   for (const list of byPayer.values()) {
     const found = list.find((a) => a.id === id);
