@@ -1,609 +1,266 @@
 # Boscopan
 
-Crypto price alert system using x402, Chainlink CRE, and on-chain smart contracts.
+**Autonomous AI agents + on-chain price alerts.** Natural language, x402 micropayments, Chainlink CRE, and Base Sepolia — one stack for hackathon-ready agentic automation.
 
-## LinkLab Masterclass Book
+---
 
-The book for this repository is available at the following url:
+## Hackathon track: why Boscopan
 
-```
-https://smartcontractkit.github.io/x402-cre-price-alerts/
-```
+Boscopan fits **agentic automation + onchain** and **AI × Web3** tracks:
 
-## Repository Overview
+- **AI agent as the interface** — Users (or other agents) talk in plain language: *"Alert me when ETH > 4000"*, *"List my alerts"*, *"Run my alerts check now"*. No RPC, ABI, or wallet UX in the conversation.
+- **Agent-initiated CRE execution** — A scheduled job reasons over alerts + prices with an LLM and stores a summary. You can also trigger the same “alerts check” on demand from chat or via `POST /agent/run-alerts-check`, optionally calling your deployed CRE workflow (prices + RuleRegistry + Pushover).
+- **Single agent API** — One `POST /agent/action` with `intent` + `params`. The server handles chain, CRE, and x402. For paid actions (e.g. create alert), the server returns 402; the agent pays then retries. Perfect for AI agents that need a “blockchain lite” API.
+- **x402 micropayments** — Create-alert is gated by $0.01 USDC (Base Sepolia). Demonstrates payment-protected APIs and agentic payments.
+- **On-chain + CRE** — Alerts are written to a RuleRegistry contract via Chainlink CRE; cron (and optional run-check HTTP trigger) use CRE to read rules, pull Chainlink prices, and send Pushover notifications.
 
-**Boscopan** is a demonstration project that showcases a complete crypto price alert system integrating three cutting-edge technologies:
+---
 
-1. **x402 Payment Protocol** - Micropayment system for API access
-2. **Chainlink [CRE](https://docs.chain.link/cre) (Chainlink Runtime Environment)** - Decentralized workflow execution for on-chain operations
-3. **Gemini AI** - Natural language processing for user interaction. While we used Gemini here you can use any LLM that has an OpenAI-API compatible endpoint.
+## What’s built
 
-This repository serves as a public demo to help developers understand how to build applications that combine AI-powered interfaces, payment-protected APIs, and blockchain-based automation.
+| Area | Implementation |
+|------|----------------|
+| **Chat** | Natural language over `/chat`: create one or more alerts, list alerts, cancel by id or index, get current price (BTC/ETH/LINK), **run alerts check now**. Uses OpenAI (e.g. `gpt-4o-mini`) with tool calling. |
+| **Agent API** | `POST /agent/action` with intents: `create_alert`, `list_alerts`, `get_price`, `cancel_alert`, `run_alerts_check`. 402 for paid intents with `agentAction.forwardTo`; optional `X-Agent-Wallet` for list/cancel. [OpenAPI](docs/agent-api.openapi.yaml) \| [Tool schema](docs/agent-tools.schema.json). |
+| **Scheduled agent** | Optional periodic job (`SCHEDULED_AGENT_INTERVAL_MS`): reads all alerts + current prices, calls LLM for a short summary/suggestion, stores last result. `GET /agent/summary` returns last summary and timestamp. |
+| **Run alerts check** | Server-side “which alerts would trigger now?” plus optional CRE run: `POST /agent/run-alerts-check` or intent `run_alerts_check` (and from chat). If `CRE_RUN_CHECK_URL` is set, server also POSTs to that URL to trigger full CRE (Chainlink prices + RuleRegistry + Pushover). |
+| **x402** | Create-alert protected by x402 ($0.01 USDC). 402 challenge → agent pays → server validates and creates alert. |
+| **CRE workflow** | HTTP trigger (write alert to RuleRegistry), Cron trigger (prices + conditions + Pushover), **Run-check HTTP trigger** (same logic as cron, for on-demand runs). |
+| **Backend state** | In-memory alert store by payer; cancel by `alertId` or 1-based index. Price service (e.g. CoinGecko, cached). |
+| **Contract & deploy** | `RuleRegistry.sol` on Base Sepolia; Hardhat deploy script: `npm run deploy:rule-registry`. |
 
-## LiveStreamed LinkLab Walkthrough
-This demo was done live on a Chainlink Linklab Session that was livestreamed.  You can <b>[watch the video and follow along here](https://www.youtube.com/live/r7VKS5L47f0).</b>
+---
 
-
-
-
-
-
-## What It Accomplishes
-
-The system allows users to create cryptocurrency price alerts through natural language conversation. Here's what happens:
-
-1. **User sends a message** like "Alert me when BTC is greater than 60000"
-2. **AI interprets the request** and extracts alert parameters (asset, condition, target price)
-3. **User pays $0.01 USDC** via x402 payment protocol to create the alert
-4. **CRE workflow HTTP trigger** your x402 gateway server triggers your custom workflow using CRE's HTTP [Capabaility](https://docs.chain.link/cre/capabilities/http)
-5. **Alert is stored on-chain** in a smart contract via Chainlink CRE's On-Chain Write [Capability](https://docs.chain.link/cre/capabilities/evm-read-write)
-6. **CRE Cron Triggers monitor on-chain prices** periodically using Chainlink price feeds
-7. **User receives push notification on phone** when the price condition is met
-
-This demonstrates a complete flow from user interaction → payment → blockchain storage → automated monitoring → notification delivery.
-
-## AI agent blockchain abstraction
-
-**Agents send intents; the server handles chain, CRE, and x402.** The agent never sees RPC, ABI, or wallet details.
-
-- **Single agent API:** `POST /agent/action` with body `{ "intent": "create_alert" | "list_alerts" | "get_price" | "cancel_alert" | "run_alerts_check", "params": { ... } }`. Optional headers: `X-Agent-Wallet` (for list/cancel), `x-payment` (for paid intents after a 402).
-- **Paid intents (e.g. create_alert):** The server returns `402 Payment Required` with a payment challenge and `agentAction.forwardTo` (e.g. `POST /alerts`). The agent pays then calls that endpoint with the same params; the server performs chain/CRE/x402.
-- **Structured tool schema:** AI agents use the [Agent API OpenAPI spec](docs/agent-api.openapi.yaml) and [agent tools JSON schema](docs/agent-tools.schema.json) as their only interface to Web3/CRE.
-- **Scheduled agent:** Set `SCHEDULED_AGENT_INTERVAL_MS` (e.g. `900000` for 15 min). A job periodically reads open alerts and recent prices, calls an LLM for a short summary/suggestion, and stores it. Use `GET /agent/summary` for the last summary.
-- **Run alerts check now:** From chat (“run my alerts check now”) or API: `POST /agent/run-alerts-check` or intent `run_alerts_check`. The server runs the same condition logic as the CRE cron and returns which alerts would trigger. If `CRE_RUN_CHECK_URL` is set to your CRE workflow’s run-check HTTP URL, the server also triggers the full CRE run (prices + RuleRegistry + Pushover).
-
-See [docs/agent-api.openapi.yaml](docs/agent-api.openapi.yaml) for the full API and [docs/agent-tools.schema.json](docs/agent-tools.schema.json) for the intent/params schema.
-
-## Minimal System Flow
+## Architecture (high level)
 
 ```mermaid
 flowchart LR
-    User[User] -->|Chat| Agent[agent]
-    Agent -->|x402 Payment| API[x402 gated endpoint]
-    API -->|HTTP Trigger| CRE[CRE Workflow]
-    CRE -->|Write Rules| Contract[RuleRegistry]
-    CRE -->|Read Rules| Contract
-    CRE -->|Get Prices| Chainlink[Price Feeds]
-    CRE -->|Notifications| User
+    User[User / Agent] -->|Chat or POST /agent/action| Server[Boscopan Server]
+    Server -->|x402| Payments[x402]
+    Server -->|Intent: create_alert| Alerts[Alert Store]
+    Server -->|Prices| PriceService[Price API]
+    Server -->|Optional| CRE_RUN[CRE Run-Check URL]
+    CRE_HTTP[CRE HTTP Trigger] -->|Write rules| Contract[RuleRegistry]
+    CRE_Cron[CRE Cron] -->|Read rules + prices| Contract
+    CRE_Cron -->|Notify| Pushover[Pushover]
+    CRE_RUN -.->|Same as cron| CRE_Cron
 ```
 
-# Setup Guide
+- **User/Agent** → Boscopan server (chat or agent API).
+- **Server** → x402 for create-alert; alert store + price service for state; optional call to CRE run-check URL.
+- **CRE** → HTTP trigger writes to RuleRegistry; Cron (and run-check trigger) read rules, get prices, send Pushover.
 
-## Prerequisites
+---
 
-Before starting, ensure you have the following:
+## Quick start
 
-### Required Software
+1. **Env**  
+   Copy `.env.example` to `.env`. Set at least: `OPENAI_API_KEY`, `X402_RECEIVER_ADDRESS`, `AGENT_WALLET_PRIVATE_KEY`, CRE keys, Pushover keys. Optional: `SCHEDULED_AGENT_INTERVAL_MS`, `CRE_RUN_CHECK_URL`.
 
-- **Node.js** (v18 or higher) and npm
-- **Bun** for the CRE post install script. [Install here](https://bun.com/docs/installation).
-- **Chainlink CRE CLI** installed and configured. [Install here](https://docs.chain.link/cre/getting-started/cli-installation).
-- **Git** for cloning the repository
+2. **Contract**  
+   Deploy RuleRegistry (see [Deploy RuleRegistry](#0-deploy-rulegistry-on-base-sepolia)) and set `X402_RECEIVER_ADDRESS` (and in CRE config).
 
-### Required Accounts & Keys
+3. **Run server (with chat)**  
+   `npm run dev:server` → Boscopan at `http://localhost:3000` with interactive chat.
 
-- **Gemini API Key**: Get from [Google AI Studio](https://aistudio.google.com/app/apikey)
-- **Pushover Account**:
+4. **Try it**  
+   In chat: *"Create an alert when BTC is greater than 60000"* (payment flow); *"List my alerts"*; *"What’s the current ETH price?"*; *"Run my alerts check now"*.
 
-  - Sign up at [pushover.net](https://pushover.net)
-  - Install Pushover app on your mobile device
-  - [Register](https://pushover.net/apps/build) your pushover app to get the API token and get your User Key from the Pushover [dashboard](https://pushover.net/)
+5. **CRE**  
+   Use CRE CLI to simulate HTTP trigger (write alert on-chain) and Cron (or run-check) for prices and notifications. Set `CRE_RUN_CHECK_URL` to your deployed run-check URL to have “run alerts check” trigger full CRE.
 
-- **Wallet with ETH and USDC on Base Sepolia**:
-  - Private key for the agent wallet (used for x402 payments)
-  - add Base Sepolia to your wallet [(go here)](https://chainlist.org/?testnets=true&search=base+sepolia)
-  - Get ETH on Base Sepolia testnet from [this faucet](https://portal.cdp.coinbase.com/products/faucet) for contract deployment.
-  - Get 1 USDC token on Base Sepolia testnet from [this faucet](https://faucet.circle.com/) for x402 payments (x402 facilitator covers gas fees).
+---
 
-## Installation
+## Setup guide
+
+### Prerequisites
+
+- **Node.js** v18+, **Bun** (for CRE postinstall), **Chainlink CRE CLI**, **Git**
+- **OpenAI API key** (used instead of Gemini)
+- **Pushover** account + app (user key + API token) for notifications
+- **Wallet** with ETH and USDC on Base Sepolia (for deploy and x402)
 
 ### 0. Deploy RuleRegistry on Base Sepolia
 
-Deploy `contracts/RuleRegistry.sol` to Base Sepolia. The constructor requires two parameters:
-1. **USDC token address**: `0x036CbD53842c5426634e7929541eC2318f3dCF7e` (Base Sepolia USDC)
-2. **Chainlink Forwarder address**: `0x82300bd7c3958625581cc2f77bc6464dcecdf3e5` ([Base Sepolia CRE Simulation Forwarder](https://docs.chain.link/cre/guides/workflow/using-evm-client/supported-networks-ts#understanding-forwarder-addresses))
+Deploy `contracts/RuleRegistry.sol`. Constructor: USDC address `0x036CbD53842c5426634e7929541eC2318f3dCF7e`, Forwarder `0x82300bd7c3958625581cc2f77bc6464dcecdf3e5` ([Base Sepolia CRE](https://docs.chain.link/cre/guides/workflow/using-evm-client/supported-networks-ts#understanding-forwarder-addresses)).
 
-> [!NOTE]
-> **Finding the Forwarder Address**: Check the [CRE documentation](https://docs.chain.link/cre/guides/workflow/using-evm-client/supported-networks-ts) for the correct Chainlink Forwarder address for Base Sepolia testnet. The forwarder address is required to ensure only verified CRE reports can call the contract's `onReport` function.
-
-You can use this <a href="https://remix.ethereum.org/?#activate=solidity,fileManager&gist=d09b0dabb744eafb373efea72bdc12b2&call=fileManager//open//gist-0fe90e825327ef313c88aedfe66ec142/gridMix4.sol" target="_blank" rel="noopener noreferrer">Remix IDE</a> link for this.
-
-> [!IMPORTANT]
-> Note the deployed contract address, we will use this later.
-
-### 1. Clone the Repository
+**Using Hardhat (recommended):**
 
 ```bash
-git clone https://github.com/smartcontractkit/x402-cre-price-alerts.git
-cd x402-cre-alerts
+npm run compile
+npm run deploy:rule-registry
 ```
 
-### 2. Install All Dependencies
+Set `X402_RECEIVER_ADDRESS` (and CRE config `ruleRegistryAddress`) to the deployed contract.
 
-This repository uses npm workspaces. Install all dependencies with a single command:
+Alternatively use [Remix](https://remix.ethereum.org/) and the same constructor args.
+
+### 1. Clone and install
 
 ```bash
+git clone <your-repo-url>
+cd boscopan
 npm install
 ```
 
-This will install dependencies for both the `server` and `cre/alerts` workspaces. The `cre/alerts` post install script will automatically run `bunx cre-setup`.
-
-## Configuration
-
-### 3. Configure Environment Variables
-
-Create a `.env` file in the **project root** (workspace root):
+### 2. Configure environment
 
 ```bash
 cp .env.example .env
 ```
 
-> [!NOTE]
-> The workspace setup uses a single `.env` file at the project root. Both `server` and `cre` workspaces can access environment variables from this root `.env` file. You may specify the `.env` file when using the CRE CLI by passing the `--env` argument.
+Edit `.env`:
 
-**Environment Variables Explained:**
+- **Server:** `PORT`, `X402_RECEIVER_ADDRESS`, `X402_FACILITATOR_URL`, `OPENAI_API_KEY`, `AGENT_WALLET_PRIVATE_KEY`
+- **Optional:** `SCHEDULED_AGENT_INTERVAL_MS` (e.g. `900000` for 15 min), `CRE_RUN_CHECK_URL`
+- **CRE:** `CRE_ETH_PRIVATE_KEY`, `CRE_TARGET`, `PUSHOVER_USER_KEY_VAR`, `PUSHOVER_API_KEY_VAR`
 
-- `PORT`: Server port (default: 3000)
-- `X402_RECEIVER_ADDRESS`: Address that receives x402 payments (Can be an EOA or Deployed RuleRegistry contract `/contracts`)
-- `X402_FACILITATOR_URL`: x402 facilitator endpoint (default: https://x402.org/facilitator). The server must be able to reach this URL over HTTPS for payment verification; if you see "fetch failed" or "Connect Timeout", check firewall/VPN and allow outbound access to x402.org.
-- `OPENAI_API_KEY`: Your OpenAI API key for natural language processing
-- `AGENT_WALLET_PRIVATE_KEY`: Private key of wallet used to make x402 payments (must have USDC on Base Sepolia). You can use the same key in step 4 as your CRE PK.
+### 3. Configure CRE workflow
 
-### 4. Configure CRE Secrets
+Edit `cre/alerts/config.staging.json`: set `ruleRegistryAddress`, keep or adjust `schedule`, `dataFeeds` (BTC/ETH/LINK price feeds on Base Sepolia). See [Chainlink Price Feeds](https://docs.chain.link/data-feeds/price-feeds/addresses?page=1&testnetPage=1&network=base&networkType=testnet&testnetSearch=).
 
-Add CRE-specific environment variables to the **root `.env` file** (same file as Step 1):
-
-```bash
-# Add these to your root .env file
-# CRE_ETH_PRIVATE_KEY is used during local simulation when using the EVM Write capability.
-# Transactions written will be signed by your PK. In production, a dedicated CRE DON will be the signer.
-CRE_ETH_PRIVATE_KEY=your_eth_private_key
-CRE_TARGET=staging-settings
-PUSHOVER_USER_KEY_VAR=your_pushover_user_key
-PUSHOVER_API_KEY_VAR=your_pushover_api_key
-```
-
-### 5. Configure CRE Workflow
-
-Edit `cre/alerts/config.staging.json` for staging/testing, or `cre/alerts/config.production.json` for production:
-
-Within `cre/alerts/config.staging.json`, update the config with your `ruleRegistryAddress` obtained in step 0. If you were unable to deploy, you may use `0x9B9fC1EeF6BFC76CD07501Ae81b66f24fAB322B1`. Be aware that this demo contract may be populated with multiple alerts from other developers.
-
-```json
-{
-  "schedule": "0 0 * * * *",
-  "ruleTTL": 1800,
-  "publicKey": "",
-  "evms": [
-    {
-      "ruleRegistryAddress": "your_deployed_rule_registry",
-      "chainSelectorName": "ethereum-testnet-sepolia-base-1",
-      "gasLimit": "1000000",
-      "dataFeeds": {
-        "BTC": "0x0FB99723Aee6f420beAD13e6bBB79b7E6F034298",
-        "ETH": "0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1",
-        "LINK": "0xb113F5A928BCfF189C998ab20d753a47F9dE5A61"
-      }
-    }
-  ]
-}
-```
-
-**Configuration Fields:**
-
-- `schedule`: Cron expression for price checks (default: hourly - `"0 0 * * * *"`)
-- `ruleTTL`: Time to live of a created rule (30 minutes by default. Older rules will not receive alerts.)
-- `publicKey`: Public key used to verify incoming HTTP Trigger requests. This field is empty for this demo. However, it is required when the full HTTP Trigger is implemented for production. [See Line 64 of `server/src/server.ts`](./server/src/server.ts)
-- `ruleRegistryAddress`: Address of your deployed RuleRegistry contract
-- `chainSelectorName`: Chain selector for Base Sepolia (`"ethereum-testnet-sepolia-base-1"`) [See the chain selector reference](https://docs.chain.link/cre/reference/sdk/evm-client-ts#chain-selector-reference)
-- `gasLimit`: Gas limit for on-chain writes
-- `dataFeeds`: Chainlink price feed addresses for BTC, ETH, LINK on Base Sepolia. You can find Base Sepolia Price Feed addresses [here](https://docs.chain.link/data-feeds/price-feeds/addresses?page=1&testnetPage=1&network=base&networkType=testnet&testnetSearch=).
-
-**Environment Variables Explained:**
-
-- `CRE_ETH_PRIVATE_KEY`: ETH private key used for local simulation of EVM Write capability
-- `CRE_TARGET`: Target profile for CLI commands
-- `PUSHOVER_USER_KEY_VAR`: Your Pushover user key
-- `PUSHOVER_API_KEY_VAR`: Your Pushover API key
+---
 
 ## Execution
 
-### Step 1: Start the Unified Server
-
-From the repository root, run the server:
+### Start Boscopan (with chat)
 
 ```bash
 npm run dev:server
 ```
 
-The server will start on `http://localhost:3000` (or your configured PORT).
+You should see **Boscopan — Server ready** and the list of routes (e.g. `POST /agent/action`, `POST /chat`, `GET /agent/summary`, `POST /agent/run-alerts-check`). Interactive chat is enabled; type messages and press Enter.
 
-You should see:
+### Create alert (natural language)
 
-```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Unified API Server
-   Port: 3000 | Payment: $0.01 USDC
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+In chat:
 
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Server ready
-   http://localhost:3000
-   POST /chat   (natural language, no payment)
-   POST /alerts (requires x402 payment)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Interactive Chat Enabled
-Type your message and press Enter (type 'exit' or 'quit' to leave)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-```
-
-This command runs the server with an interactive chat.
-
-### Step 2: Create an Alert via Natural Language
-
-You can interact with the chat interface in two ways:
-
-#### Option A: Interactive Chat (Recommended)
-
-Send a message to create your alert:
-
-```
+```text
 > Create an alert when BTC is greater than 60000
 ```
-> [!NOTE]: this is deliberately set to below current market price so that the trigger fires.
 
-Type `exit` or `quit` to disable chat (server continues running).
+Server uses OpenAI to extract params, then creates a paid alert via x402 and returns alert details + CRE payload.
 
-#### Option B: Direct API Call
+### List / cancel / price / run check (chat)
 
-Alternatively, send a POST request to the `/chat` endpoint:
+- *"List my alerts"* / *"Show my alerts"*
+- *"Cancel the second alert"* / *"Cancel alert by id ..."*
+- *"What’s the current ETH price?"*
+- *"Run my alerts check now"*
+
+### Agent API (curl)
 
 ```bash
-curl -X POST http://localhost:3000/chat \
+# List alerts (use X-Agent-Wallet or params.payer)
+curl -X POST http://localhost:3000/agent/action \
   -H "Content-Type: application/json" \
-  -d '{"message":"Create an alert when BTC is greater than 60000"}'
+  -H "X-Agent-Wallet: 0xYourAddress" \
+  -d '{"intent":"list_alerts"}'
+
+# Get price
+curl -X POST http://localhost:3000/agent/action \
+  -H "Content-Type: application/json" \
+  -d '{"intent":"get_price","params":{"asset":"ETH"}}'
+
+# Run alerts check
+curl -X POST http://localhost:3000/agent/run-alerts-check
+curl -X POST http://localhost:3000/agent/action -H "Content-Type: application/json" -d '{"intent":"run_alerts_check"}'
+
+# Last scheduled summary
+curl http://localhost:3000/agent/summary
 ```
 
-**What happens:**
+### Create alert via API (x402)
 
-1. Gemini AI interprets your message
-2. Extracts alert parameters (asset, condition, target price)
-3. Creates a paid alert via `/alerts` endpoint with x402 payment
-4. Returns alert details and payment transaction hash
-
-**Supported Assets:** BTC, ETH, LINK only
-
-### Step 3: Copy Alert JSON Payload
-
-From the server console output, copy the CRE payload JSON.
-
-Example output:
-
-```json
-CRE Workflow Payload (copy for HTTP trigger):
-
-{"id":"42d2ea846d5b5e0ba439b68f8835188e023b74454c504df80ae0a0eb329eccd6","asset":"ETH","condition":"gt","targetPriceUsd":1000,"createdAt":1765324585}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-```
-
-### Step 4: Write Alert to Chain (CRE HTTP Trigger)
-
-Open a new terminal window so you can run commands.
-
-Simulate the CRE HTTP Trigger to write the alert on-chain:
+Direct create (payment required):
 
 ```bash
-cd cre
-cre workflow simulate alerts --env ../.env --broadcast
+curl -X POST http://localhost:3000/alerts \
+  -H "Content-Type: application/json" \
+  -d '{"asset":"BTC","condition":"gt","targetPriceUsd":60000}'
 ```
 
-When prompted:
+First call returns `402` with payment challenge; client pays then retries with `x-payment` header (e.g. using `x402-fetch` or equivalent).
 
-1. Select **HTTP trigger** (option 2)
-2. Paste the JSON payload from Step 3
-3. The workflow will write the alert to the RuleRegistry contract on-chain
+### CRE: write alert on-chain and run cron
 
-Example output:
+1. From server output after creating an alert, copy the CRE payload JSON.
+2. Simulate HTTP trigger (write to RuleRegistry):
 
-```
-2025-12-10T17:21:20Z [SIMULATION] Simulator Initialized
+   ```bash
+   cd cre && cre workflow simulate alerts --env ../.env --broadcast
+   ```
+   Choose HTTP trigger and paste the payload.
 
-2025-12-10T17:21:20Z [SIMULATION] Running trigger trigger=http-trigger@1.0.0-alpha
-2025-12-10T17:21:21Z [USER LOG] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-2025-12-10T17:21:21Z [USER LOG] CRE Workflow: HTTP Trigger
-2025-12-10T17:21:21Z [USER LOG] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-2025-12-10T17:21:21Z [USER LOG] [Step 1] Received alert data: {"asset":"BTC","condition":"gt","createdAt":1765416045,"id":"1b381294cc2a9771743d80a3d11380cf4e377b64802a1c728776d2f6defed3cc","targetPriceUsd":10}
-2025-12-10T17:21:21Z [USER LOG] [Step 2] Encoding alert data for on-chain write...
-2025-12-10T17:21:21Z [USER LOG] [Step 3] Generating CRE report...
-2025-12-10T17:21:21Z [USER LOG] [Step 4] Writing to RuleRegistry contract: 0x9B9fC1EeF6BFC76CD07501Ae81b66f24fAB322B1
-2025-12-10T17:21:22Z [USER LOG] [Step 5] [SUCCESS] Transaction successful: 0x66b8b811d6902bfcfc5e5b4890602ec2620084f8dcc2a02e49a2dddc8d9f1a8a
-2025-12-10T17:21:22Z [USER LOG] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3. Simulate Cron (prices + notifications):
 
-Workflow Simulation Result:
- "0x66b8b811d6902bfcfc5e5b4890602ec2620084f8dcc2a02e49a2dddc8d9f1a8a"
+   ```bash
+   cre workflow simulate alerts --env ../.env
+   ```
+   Choose Cron trigger.
 
-2025-12-10T17:21:22Z [SIMULATION] Execution finished signal received
-2025-12-10T17:21:22Z [SIMULATION] Skipping WorkflowEngineV2
-```
+If you deployed a CRE workflow with the **run-check HTTP trigger**, set `CRE_RUN_CHECK_URL` in `.env` so `POST /agent/run-alerts-check` and the `run_alerts_check` intent also trigger the full CRE run.
 
-### Step 5: Check Price Conditions (CRE Cron Trigger)
+---
 
-Execute the CRE CRON Trigger to check prices and send notifications:
+## API summary
 
-```bash
-cre workflow simulate alerts --env ../.env
-```
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/chat` | Natural language; create/list/cancel alerts, get price, run alerts check. |
+| POST | `/agent/action` | Agent API: `intent` + `params`; 402 for paid intents. |
+| GET | `/agent/summary` | Last scheduled agent summary (alerts + prices, LLM). |
+| POST | `/agent/run-alerts-check` | Run alerts check now; optionally calls `CRE_RUN_CHECK_URL`. |
+| GET | `/alerts` | List alerts by `?payer=`. |
+| GET | `/prices` | Current BTC/ETH/LINK USD (optional `?asset=`). |
+| POST | `/alerts` | Create alert (x402 $0.01 USDC). |
+| POST | `/alerts/cancel` | Cancel by `alertId` or `alertIndex` (body: `payer`, `alertId` or `alertIndex`). |
 
-When prompted:
+Full spec: [docs/agent-api.openapi.yaml](docs/agent-api.openapi.yaml). Tool schema for agents: [docs/agent-tools.schema.json](docs/agent-tools.schema.json).
 
-1. Select **Cron trigger** (option 1)
-2. The workflow will:
-   - Fetch current prices for BTC, ETH, LINK
-   - Check all rules stored on-chain
-   - Send Pushover notifications when conditions are met
+---
 
-Example output:
+## Directory structure
 
-```
-2025-12-10T17:22:53Z [SIMULATION] Simulator Initialized
-
-2025-12-10T17:22:53Z [SIMULATION] Running trigger trigger=cron-trigger@1.0.0
-2025-12-10T17:22:53Z [USER LOG] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-2025-12-10T17:22:53Z [USER LOG] CRE Workflow: Cron Trigger
-2025-12-10T17:22:53Z [USER LOG] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-2025-12-10T17:22:53Z [USER LOG] [Step 1] Fetching price data from Chainlink feeds...
-2025-12-10T17:22:53Z [USER LOG] • BTC: $90855.76
-2025-12-10T17:22:53Z [USER LOG] • ETH: $3253.52
-2025-12-10T17:22:53Z [USER LOG] • LINK: $13.76
-2025-12-10T17:22:53Z [USER LOG] [Step 2] Found 2 rules on-chain
-2025-12-10T17:22:53Z [USER LOG] [Step 3] Checking 2 rules...
-2025-12-10T17:22:53Z [USER LOG] [Rule 1] [SUCCESS] Condition met: BTC $90855 gt $5
-2025-12-10T17:22:53Z [USER LOG] -> Pushover notification sent (Status: 200)
-2025-12-10T17:22:53Z [USER LOG] [Rule 2] [SUCCESS] Condition met: BTC $90855 gt $10
-2025-12-10T17:22:54Z [USER LOG] -> Pushover notification sent (Status: 200)
-2025-12-10T17:22:54Z [USER LOG] [Step 4] [SUCCESS] Complete: 2 notification(s) sent
-2025-12-10T17:22:54Z [USER LOG] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Workflow Simulation Result:
- "Processed 2 rules, sent 2 notifications"
-
-2025-12-10T17:22:54Z [SIMULATION] Execution finished signal received
-2025-12-10T17:22:54Z [SIMULATION] Skipping WorkflowEngineV2
-```
+| Path | Purpose |
+|------|--------|
+| `server/` | Boscopan API: Express, chat, agent action, x402, alert store, price service, scheduled agent. |
+| `server/src/server.ts` | Routes: `/chat`, `/agent/action`, `/agent/summary`, `/agent/run-alerts-check`, `/alerts`, `/prices`, `/alerts/cancel`. |
+| `server/src/scheduledAgent.ts` | Periodic reasoning (alerts + prices → LLM summary), `runAlertsCheckNow()`. |
+| `server/src/chat.ts` | Interactive terminal chat for Boscopan. |
+| `server/src/alertStore.ts` | In-memory alerts by payer; cancel by id or index. |
+| `server/src/priceService.ts` | Current prices (e.g. CoinGecko), cached. |
+| `server/src/x402Client.ts` | x402 payment client for paid alert creation. |
+| `cre/alerts/` | CRE workflow: HTTP trigger (write alert), Cron (prices + Pushover), Run-check HTTP trigger. |
+| `cre/alerts/runCheckCallback.ts` | HTTP handler that runs same logic as cron (for on-demand CRE run). |
+| `contracts/RuleRegistry.sol` | On-chain rule storage; CRE report receiver. |
+| `scripts/deploy-RuleRegistry.ts` | Hardhat deploy for RuleRegistry on Base Sepolia. |
+| `docs/agent-api.openapi.yaml` | OpenAPI for Boscopan agent API. |
+| `docs/agent-tools.schema.json` | JSON schema for agent intents/params. |
 
-> [!NOTE]
-> The cron trigger runs automatically on the configured schedule once deployed. The frequency of the CRON trigger is set within `cre/alerts/config.staging.json`, as well as the Rule TTL.
+---
 
-### Step 6: Review the Pushover notification on your device
+## Tech stack
 
-### Step 7: (Optional) View balance of x402 Receiver
+- **Server:** Node.js, Express, OpenAI API (e.g. gpt-4o-mini), x402-express, x402-fetch, viem.
+- **CRE:** Chainlink CRE SDK, HTTP + Cron + run-check triggers, Chainlink price feeds, Pushover.
+- **Chain:** Base Sepolia; RuleRegistry (Solidity), USDC, Hardhat deploy.
 
-If you set your x402 Receiver in the root `.env` file (`X402_RECEIVER_ADDRESS`) to your RuleRegistry contract, call the `getUSDCBalance()` to see the USDC received from x402 payments.
-
-### Step 8: (Optional) Withdraw USDC tokens from RuleRegistry
+---
 
-If you set your x402 Receiver in the root `.env` file (`X402_RECEIVER_ADDRESS`) to your RuleRegistry contract, call the `withdrawUSDC(address, amount)` to withdraw USDC received from x402 payments. Reminder, USDC uses `6` decimal places!
+## Supported features
 
-## Directory Structure
+- **Assets:** BTC, ETH, LINK.
+- **Conditions:** `gt`, `lt`, `gte`, `lte`.
+- **Payment:** $0.01 USDC per alert creation (x402).
+- **Storage:** In-memory alert store + on-chain RuleRegistry via CRE.
+- **Notifications:** Pushover when CRE cron (or run-check) detects condition met.
+- **Scheduled agent:** Optional interval; `GET /agent/summary` for last LLM summary.
 
-### `server/`
+---
 
-**Purpose:** Unified API server combining natural language interface and payment-protected endpoints. Endpoints combined into a single server for demo simplicity.
+## Reference
 
-**Key Components:**
-
-- **`src/server.ts`**: Main Express.js server with agent and chat endpoints:
-
-  - `POST /agent/action`: **Agent-facing "blockchain lite" API** — single entry point for intents (`create_alert`, `list_alerts`, `get_price`, `cancel_alert`). Agent sends intent + params; server handles chain, CRE, and x402. For paid intents, returns 402 with payment endpoint; agent pays then calls that endpoint.
-  - `POST /chat`: Natural language interface (no payment required)
-    - Uses OpenAI to interpret user messages and extract alert parameters
-    - Validates supported assets (BTC, ETH, LINK only)
-    - Internally calls `/alerts` endpoint with x402 payment when creating alerts
-  - `POST /alerts`: Direct alert creation (requires x402 payment)
-    - Protected by x402 payment middleware ($0.01 USDC)
-    - Creates deterministic alert ID (SHA256 hash)
-    - Outputs CRE workflow payload for on-chain storage
-
-- **`src/x402Client.ts`**: x402 payment client
-
-  - Wraps HTTP requests with automatic payment handling
-  - Uses `x402-fetch` library to handle payment challenges
-  - Automatically retries requests with payment authorization
-
-- **`src/chat.ts`**: Interactive terminal chat interface
-  - Provides command-line interface for chatting with the server
-  - Displays alert details and CRE workflow payloads
-  - Allows users to create alerts without using curl commands
-
-**Technologies:**
-
-- Express.js for REST API
-- x402-express middleware for payment protection
-- Gemini AI (via OpenAI SDK compatibility) for NLP
-
-### `cre/`
-
-**Purpose:** Chainlink CRE workflow for on-chain operations and price monitoring
-
-**Key Components:**
-
-- **`alerts/main.ts`**: Workflow entry point that initializes HTTP and Cron triggers
-- **`alerts/httpCallback.ts`**: HTTP trigger handler
-  - Receives alert data from server
-  - Encodes alert data for CRE report format
-  - Writes alert to RuleRegistry contract on-chain
-- **`alerts/cronCallback.ts`**: Cron trigger handler
-  - Runs on configured schedule (default: hourly)
-  - Fetches current prices from Chainlink price feeds (BTC, ETH, LINK)
-  - Reads all rules from RuleRegistry contract
-  - Checks price conditions against target prices
-  - Sends Pushover notifications when conditions are met
-- **`alerts/config.staging.json`**: Workflow configuration for staging environment
-  - Cron schedule expression
-  - Rule Time To Live
-  - RuleRegistry contract address
-  - Chainlink price feed addresses
-  - Network configuration
-- **`alerts/config.production.json`**: Workflow configuration for production environment
-  - Same structure as staging config
-  - Use for production deployments
-- **`alerts/workflow.yaml`**: Workflow-specific settings
-  - Maps targets (`staging-settings`, `production-settings`) to their config files
-  - Defines workflow names and artifact paths for each environment
-- **`alerts/types.ts`**: Shared TypeScript type definitions
-- **`project.yaml`**: CRE project configuration (RPC endpoints, network settings for each target)
-- **`secrets.yaml`**: Secret variable mappings for Pushover credentials
-
-**Technologies:**
-
-- Chainlink CRE SDK for workflow execution
-- Viem for contract interactions
-- Chainlink Price Feeds for price data
-- Pushover API for mobile notifications
-
-### `contracts/`
-
-**Purpose:** Solidity smart contracts for on-chain alert storage
-
-**Key Components:**
-
-- **`RuleRegistry.sol`**: Main contract for storing price alert rules
-
-  - Stores rules in a mapping (ruleId → Rule struct)
-  - Implements `IReceiverTemplate` to receive CRE reports
-  - Provides functions to write, read, and query rules
-  - Includes `onlyOwner` functions for USDC withdrawal (x402 payments)
-  - Rule struct contains: `id`, `asset`, `condition`, `targetPriceUsd`, `createdAt`
-
-- **`interfaces/`**: Required interfaces for CRE integration
-  - `IReceiverTemplate.sol`: Interface for receiving CRE reports
-  - `IReceiver.sol`: Base receiver interface
-  - `IERC165.sol`: ERC165 interface for contract introspection
-  - `IERC20.sol`: ERC20 interface for USDC token interactions
-
-**Technologies:**
-
-- Solidity ^0.8.0
-- Chainlink CRE receiver interfaces
-- OpenZeppelin-style interfaces
-
-## General Flow
-
-### 1. Alert Creation Flow
-
-```
-User → /chat endpoint → Gemini AI → Extract Parameters → /alerts endpoint → x402 Payment → Alert Created
-```
-
-**Detailed Steps:**
-
-1. User sends natural language message with interactive chat or `curl` to `POST /chat`
-2. Server sends message to Gemini AI with function calling enabled
-3. Gemini validates and extracts: `asset`, `condition`, `targetPriceUsd`.
-4. Server calls internal `/alerts` endpoint using `x402Client`
-5. x402 payment handshake occurs:
-   - Initial request → 402 Payment Required
-   - Client processes challenge → Creates payment authorization
-   - Retry with payment → Server validates → 200 OK + settlement
-6. Server creates alert with deterministic ID (SHA256 hash)
-7. Server outputs CRE payload JSON to console (Or calls the HTTP Trigger in production)
-
-### 2. On-Chain Storage Flow
-
-```
-Server Output → CRE HTTP Trigger → Encode Report → Write to RuleRegistry Contract
-```
-
-\*\*Detailed Steps:
-
-1. HTTP Trigger fires
-2. CRE workflow:
-   - Decodes alert data
-   - Encodes as ABI parameters: `(bytes32, string, string, uint256, uint256)`
-   - Generates CRE report with signature
-   - Writes report to RuleRegistry contract via `onReport()` function
-3. Contract decodes report and stores rule in mapping
-4. Transaction hash returned
-
-### 3. Price Monitoring Flow
-
-```
-Cron Schedule → CRE Cron Trigger → Fetch Prices → Read Rules → Check Conditions → Send Notifications
-```
-
-**Detailed Steps:**
-
-1. Cron trigger fires on schedule (default: hourly)
-2. CRE workflow:
-   - Fetches current prices from Chainlink feeds (BTC, ETH, LINK)
-   - Reads all rules from RuleRegistry contract
-   - For each rule:
-     - Gets current price for rule's asset
-     - Checks if condition is met (gt, lt, gte, lte)
-     - Skips rules older than 5 minutes
-     - If condition met: sends Pushover notification
-3. User receives push notification on mobile device
-
-### 4. x402 Payment Flow
-
-```
-Client Request → 402 Challenge → Payment Authorization → Settlement → Response
-```
-
-**Detailed Steps:**
-
-1. Client makes initial request (no payment header)
-2. Server responds with `402 Payment Required` (challenge)
-3. Client processes challenge:
-   - Decodes payment requirements
-   - Creates payment authorization signature
-   - Includes authorization in `x-payment` header
-4. Client retries request with payment header
-5. Server validates payment:
-   - Verifies authorization signature
-   - Checks payment amount and recipient
-   - Processes settlement transaction
-6. Server responds with `200 OK` + `x-payment-response` header (settlement details)
-
-## Key Technologies Integration
-
-### x402 Payment Protocol
-
-- **Purpose**: Micropayments for API access
-- **Implementation**: `x402-express` middleware + `x402-fetch` client
-- **Payment**: $0.01 USDC on Base Sepolia
-- **Flow**: Challenge → Authorization → Settlement
-
-### Chainlink CRE
-
-- **Purpose**: Decentralized workflow execution for on-chain operations
-- **Implementation**: CRE SDK with HTTP and Cron triggers
-- **Capabilities**: EVM contract calls, price feed queries, HTTP requests
-- **Network**: Base Sepolia testnet
-
-### Gemini AI
-
-- **Purpose**: Natural language understanding
-- **Implementation**: OpenAI SDK compatibility layer
-- **Model**: `gemini-2.0-flash-lite`
-- **Function Calling**: Extracts structured data from user messages
-
-### Chainlink Price Feeds
-
-- **Purpose**: Reliable on-chain price data
-- **Assets**: BTC, ETH, LINK
-- **Network**: Base Sepolia
-- **Format**: 8 decimals (price × 10^8)
-
-## Supported Features
-
-- **Assets**: BTC, ETH, LINK only
-- **Conditions**: `gt` (greater than), `lt` (less than), `gte` (>=), `lte` (<=)
-- **Notifications**: Pushover push notifications to mobile devices
-- **Payment**: $0.01 USDC per alert creation
-- **Storage**: On-chain in RuleRegistry smart contract
-- **Monitoring**: Automated hourly price checks
+- **LinkLab / Book:** [smartcontractkit.github.io/x402-cre-price-alerts](https://smartcontractkit.github.io/x402-cre-price-alerts/)
+- **CRE:** [docs.chain.link/cre](https://docs.chain.link/cre)
+- **x402:** [x402.org](https://x402.org/)
