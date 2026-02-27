@@ -1,7 +1,7 @@
 kind: starter-template
-id: x402-cre-price-alerts
-title: "x402 CRE Price Alerts (TypeScript)"
-description: "Crypto price alert system with x402 micropayments, Chainlink CRE workflows, and Gemini AI for natural language alerts. Create alerts via chat, pay with USDC, store on-chain, get push notifications."
+id: boscopan
+title: "Boscopan (TypeScript)"
+description: "Boscopan: crypto price alert system with x402 micropayments, Chainlink CRE workflows, and AI for natural language alerts. Create alerts via chat, pay with USDC, store on-chain, get push notifications."
 language: typescript
 category: price-alerts
 tags: [x402, chainlink-cre, gemini-ai, price-alerts, base-sepolia, evm-settlement]

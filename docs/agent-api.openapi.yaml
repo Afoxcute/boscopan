@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
-  title: Agent API (Blockchain Lite)
+  title: Boscopan Agent API (Blockchain Lite)
   description: |
-    **AI agent blockchain abstraction**: agents send intents; the server handles chain, CRE, and x402.
+    **Boscopan** — AI agent blockchain abstraction: agents send intents; the server handles chain, CRE, and x402.
     This is the single REST interface for AI agents — no RPC, ABI, or wallet details needed by the agent.
   version: 1.0.0
 

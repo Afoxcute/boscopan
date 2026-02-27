@@ -346,7 +346,7 @@ const postPushoverData =
       token: secrets.pushoverApiKey,
       user: secrets.pushoverUserId,
       message: message,
-      title: "CRE PRICE ALERT",
+      title: "Boscopan",
     };
 
     const bodyBytes = new TextEncoder().encode(JSON.stringify(pushoverPayload));

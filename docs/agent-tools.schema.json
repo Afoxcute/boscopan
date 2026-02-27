@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Agent tools (blockchain abstraction)",
-  "description": "Structured tool schema for AI agents. These tools are the only interface to Web3/CRE; the server handles RPC, contracts, and x402.",
+  "title": "Boscopan Agent tools (blockchain abstraction)",
+  "description": "Boscopan: structured tool schema for AI agents. These tools are the only interface to Web3/CRE; the server handles RPC, contracts, and x402.",
   "type": "object",
   "properties": {
     "intent": {

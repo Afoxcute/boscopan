@@ -1,8 +1,8 @@
 /**
- * Interactive Chat Interface
- * 
+ * Boscopan — Interactive Chat Interface
+ *
  * This module provides an interactive terminal interface for chatting with
- * the price alert system. Users can type messages directly instead of using curl.
+ * Boscopan. Users can type messages directly instead of using curl.
  * 
  * The chat interface makes HTTP requests to the server's /chat endpoint
  * and displays responses in a user-friendly format.

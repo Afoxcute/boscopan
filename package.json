@@ -1,8 +1,8 @@
 {
-  "name": "@chainlink/x402-cre-price-alerts",
+  "name": "boscopan",
   "version": "1.0.0",
   "private": true,
-  "description": "Crypto price alert system using x402 payments, Chainlink CRE, and on-chain smart contracts",
+  "description": "Boscopan: crypto price alert system using x402 payments, Chainlink CRE, and on-chain smart contracts",
   "workspaces": [
     "server",
     "cre/alerts"

@@ -1,4 +1,6 @@
-# x402-cre: Crypto Price Alert System
+# Boscopan
+
+Crypto price alert system using x402, Chainlink CRE, and on-chain smart contracts.
 
 ## LinkLab Masterclass Book
 
@@ -10,7 +12,7 @@ https://smartcontractkit.github.io/x402-cre-price-alerts/
 
 ## Repository Overview
 
-**x402-cre** is a demonstration project that showcases a complete crypto price alert system integrating three cutting-edge technologies:
+**Boscopan** is a demonstration project that showcases a complete crypto price alert system integrating three cutting-edge technologies:
 
 1. **x402 Payment Protocol** - Micropayment system for API access
 2. **Chainlink [CRE](https://docs.chain.link/cre) (Chainlink Runtime Environment)** - Decentralized workflow execution for on-chain operations

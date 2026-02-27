@@ -21,9 +21,9 @@ import * as priceService from "./priceService";
 import * as scheduledAgent from "./scheduledAgent";
 
 /**
- * Unified API Server
+ * Boscopan — Unified API Server
  *
- * This server demonstrates a crypto price alert system that combines:
+ * This server runs Boscopan, a crypto price alert system that combines:
  * - Natural language processing (via OpenAI API)
  * - x402 payment protocol for micropayments
  * - Chainlink CRE (Chainlink Runtime Environment) for on-chain operations
@@ -939,7 +939,7 @@ app.post("/alerts/cancel", (req, res) => {
 
 app.listen(PORT, async () => {
   console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log("Server ready");
+  console.log("Boscopan — Server ready");
   console.log(`   http://localhost:${PORT}`);
   console.log("   POST /agent/action (agent API: intent + params; chain/CRE/x402 handled by server)");
   console.log("   POST /chat        (natural language; list, cancel, create one or more alerts)");
