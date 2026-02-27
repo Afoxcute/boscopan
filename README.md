@@ -31,6 +31,20 @@ Boscopan fits **agentic automation + onchain** and **AI × Web3** tracks:
 
 ---
 
+## Chainlink usage
+
+Where Chainlink appears in this repo (links relative to repo root):
+
+| What | Code |
+|------|------|
+| **CRE workflow** (HTTP + Cron + run-check triggers) | [cre/alerts/main.ts](cre/alerts/main.ts) |
+| **Write alert on-chain** (CRE report → RuleRegistry) | [cre/alerts/httpCallback.ts](cre/alerts/httpCallback.ts) |
+| **Price feeds + conditions + Pushover** (Cron) | [cre/alerts/cronCallback.ts](cre/alerts/cronCallback.ts) — reads rules, fetches Chainlink Price Feeds (BTC/ETH/LINK), checks conditions |
+| **Run-check HTTP trigger** (on-demand same as cron) | [cre/alerts/runCheckCallback.ts](cre/alerts/runCheckCallback.ts) |
+| **On-chain receiver** (CRE reports, Forwarder) | [contracts/RuleRegistry.sol](contracts/RuleRegistry.sol) |
+
+---
+
 ## Architecture (high level)
 
 ```mermaid
