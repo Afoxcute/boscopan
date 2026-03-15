@@ -275,6 +275,6 @@ Full spec: [docs/agent-api.openapi.yaml](docs/agent-api.openapi.yaml). Tool sche
 
 ## Reference
 
-- **LinkLab / Book:** [smartcontractkit.github.io/x402-cre-price-alerts](https://smartcontractkit.github.io/x402-cre-price-alerts/)
+
 - **CRE:** [docs.chain.link/cre](https://docs.chain.link/cre)
 - **x402:** [x402.org](https://x402.org/)
